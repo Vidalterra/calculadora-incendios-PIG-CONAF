@@ -192,137 +192,213 @@ def get_base_hcfm(temp, rh, hour_float):
             col_name = col
             break
             
-    if row_idx is None: return None, "Temperatura fuera de rango"
-    if col_name is None: return None, "Humedad fuera de rango"
+    if row_idx is None:
+        return None, "La temperatura está fuera de los rangos de la tabla"
+    if col_name is None:
+        return None, "La humedad relativa está fuera de los rangos de la tabla"
         
-    return df.loc[row_idx, col_name], "Tabla de Día" if is_day else "Tabla de Noche"
+    hcfm = df.loc[row_idx, col_name]
+    
+    periodo = "día" if is_day else "noche"
+    return hcfm, f"Tabla {periodo}: Temp={temp}°C, HR={rh}% → HCFM={hcfm}%"
 
-def get_correction(month, shade_pct, aspect, slope, hour_float):
-    if month in [11, 12, 1]: season = "verano"
-    elif month in [5, 6, 7]: season = "invierno"
-    else: season = "oto_prim"
-    
-    shade_cond = "mas50" if shade_pct > 50 else "menos50"
-    
-    file_key = f"{season}_{shade_cond}"
-    try:
-        df = pd.read_csv(FILES[file_key], sep=';')
-    except KeyError:
-        return 0, "Archivo de corrección no encontrado"
-    except FileNotFoundError:
-        return 0, f"Archivo {FILES[file_key]} no encontrado"
-    
-    aspect_code = aspect[0]
-    
-    target_col = None
-    for col in df.columns[2:]:
-        try:
-            col_hour = int(col)
-            if hour_float < col_hour:
-                target_col = col
-                break
-        except:
-            continue
-            
-    if target_col is None:
-        target_col = df.columns[-1]
-    
-    correction = 0
-    for idx, row in df.iterrows():
-        r_exp = str(row.iloc[0])
-        r_slope = str(row.iloc[1])
-        
-        match_exp = (aspect_code in r_exp) or ('TODAS' in r_exp.upper())
-        match_slope = parse_range(slope, r_slope)
-        
-        if match_exp and match_slope:
-            correction = row[target_col]
-            break
-            
-    return correction, f"Corrección {season} ({shade_cond})"
-
-def get_pig(hcfm_final, temp, shade_pct):
-    try:
-        df = pd.read_csv(FILES["pig"], sep=';')
-    except FileNotFoundError:
-        return 0, "Falta archivo PIG"
-    
-    row_match = None
-    for idx, row in df.iterrows():
-        r_shade = row.iloc[0]
-        r_temp = row.iloc[1]
-        
-        if parse_range(shade_pct, r_shade) and parse_range(temp, r_temp):
-            row_match = row
-            break
-            
-    if row_match is None: return 0, "No data PIG para Temp/Sombra"
-    
-    h_target = str(int(round(hcfm_final)))
-    
-    if int(h_target) < 2: h_target = "2"
-    
-    if h_target in df.columns:
-        return row_match[h_target], "OK"
+def get_correction(month, sombra, exposicion, pendiente, hour_float):
+    """
+    Obtiene corrección para el HCFM según temporada, pendiente, sombreado...
+    """
+    # Determinar estación
+    if month in [12, 1, 2]:
+        estacion = "verano"
+    elif month in [6, 7, 8]:
+        estacion = "invierno"
     else:
-        return row_match.iloc[-1], "Humedad extrema (riesgo bajo)"
+        estacion = "oto_prim"
+    
+    # Determinar rango de pendiente
+    pendiente_key = "mas50" if pendiente >= 50 else "menos50"
+    
+    filename = FILES[f"{estacion}_{pendiente_key}"]
+    
+    try:
+        df_corr = pd.read_csv(filename, sep=';')
+    except FileNotFoundError:
+        return 0, f"No se encontró {filename}"
+    
+    # Paso 1: Buscar columna de exposición
+    exp_map = {
+        "Norte": ["N", "Norte"],
+        "Sur": ["S", "Sur"],
+        "Este": ["E", "Este"],
+        "Oeste": ["O", "Oeste", "W", "West"]
+    }
+    
+    col_exp = None
+    for posible_col in df_corr.columns:
+        for nombre in exp_map.get(exposicion, []):
+            if nombre.lower() in str(posible_col).lower():
+                col_exp = posible_col
+                break
+        if col_exp:
+            break
+    
+    if col_exp is None:
+        return 0, f"No se encontró columna para exposición '{exposicion}'"
+    
+    # Paso 2: Buscar fila por sombra
+    sombra_idx = None
+    for idx, val in df_corr.iloc[:, 0].items():
+        if parse_range(sombra, val):
+            sombra_idx = idx
+            break
+    
+    if sombra_idx is None:
+        return 0, f"Sombreado {sombra}% fuera de rango de la tabla"
+    
+    correccion = df_corr.loc[sombra_idx, col_exp]
+    
+    return correccion, (f"Corrección estacional ({estacion}, Pend {pendiente_key}): "
+                        f"Sombra={sombra}%, Exp={exposicion} → {correccion:+.1f}%")
 
-# --- 5. INTERFAZ GRÁFICA (FRONTEND) ---
+def get_pig(hcfm, temp, sombra):
+    """
+    Obtiene la probabilidad de ignición (PIG) del archivo pig.csv
+    según la HCFM final, temperatura y sombra.
+    """
+    try:
+        df_pig = pd.read_csv(FILES["pig"], sep=';')
+    except FileNotFoundError:
+        return 0, "No se encontró el archivo de probabilidad de ignición"
+    
+    # Selección de columna según temperatura
+    if temp <= 20:
+        col_temp = "< 20 ºC"
+    elif temp <= 30:
+        col_temp = ">20 - 30 ºC"
+    else:
+        col_temp = "> 30 ºC"
+    
+    # Buscar la fila según HCFM
+    row_idx = None
+    for idx, val in df_pig.iloc[:, 0].items():
+        if parse_range(hcfm, val):
+            row_idx = idx
+            break
+    
+    if row_idx is None:
+        return 0, f"Humedad {hcfm:.1f}% fuera de rango en tabla PIG"
+    
+    # Leer el valor de probabilidad (ajustar por sombra)
+    pig_base = df_pig.loc[row_idx, col_temp]
+    
+    # Aplicar ajuste por sombra (ejemplo: si sombra > 50%, reducir PIG)
+    if sombra > 50:
+        pig_final = pig_base * 0.8  # Reducción del 20%
+    else:
+        pig_final = pig_base
+    
+    return pig_final, f"PIG calculado: Temp {col_temp}, HCFM={hcfm:.1f}% → {pig_final:.0f}%"
 
-# Header con logos
+# --- ESTILOS CSS ---
 st.markdown("""
 <style>
-    .header-container {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 20px;
-        padding: 15px 0;
-        border-bottom: 2px solid #e74c3c;
-    }
-    .title-section {
-        flex: 1;
-    }
-    .logo-section {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-        max-width: 200px;
-    }
-    .footer-logo {
-        text-align: center;
-        margin-top: 30px;
-        padding: 20px 0;
-        border-top: 2px solid #e74c3c;
-    }
+html, body, .stApp { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+/* HEADER: Recuadro verde corporativo */
+.app-header {
+    background: linear-gradient(135deg, #F1F8F4 0%, #E3F1EA 100%);
+    color: #fff; 
+    padding: 1.2rem 2rem;
+    border-radius: 0 0 16px 16px; 
+    margin: -1rem -2rem 1.8rem;
+    box-shadow: 0 4px 20px rgba(27,67,50,.35);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.header-left {
+    flex: 1;
+    display: flex;
+    justify-content: flex-start;
+}
+
+.header-center {
+    flex: 2;
+    text-align: center;
+}
+.header-center h1 { 
+    margin:0; 
+    font-size:1.75rem; 
+    font-weight:700; 
+    letter-spacing:-.3px; 
+    color: #1B4332 !important; 
+}
+.header-center p { 
+    margin:.3rem 0 0; 
+    font-size:.88rem; 
+    opacity:.9; 
+    color: #2D6A4F; 
+}
+
+.header-right {
+    flex: 1;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+}
+
+.header-logo-img {
+    height: 60px;
+    width: auto;
+    display: block;
+}
+
+@media (max-width: 768px) {
+    .app-header { flex-direction: column; text-align: center; }
+    .header-left, .header-right { justify-content: center; }
+}
+
+.footer-logo {
+    text-align: center;
+    margin-top: 30px;
+    padding: 20px 0;
+    border-top: 2px solid #2D6A4F;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# Intenta cargar los logos (si están disponibles)
-logo_svg = render_svg_logo("logo.svg", width="150px")
-slogan_svg = render_svg_logo("Slogan.svg", width="150px")
+# --- HEADER CON RECUADRO VERDE ---
+logo_svg = render_svg_logo("logo.svg", width="auto")
+slogan_svg = render_svg_logo("Slogan.svg", width="auto")
 
-col_title, col_logos = st.columns([3, 1])
+st.markdown(f"""
+<div class="app-header">
+    <div class="header-left">
+        {logo_svg if logo_svg else ''}
+    </div>
+    <div class="header-center">
+        <h1>🔥 Calculadora de Probabilidad de Ignición (PIG)</h1>
+        <p>CONAF</p>
+    </div>
+    <div class="header-right">
+        {slogan_svg if slogan_svg else ''}
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-with col_title:
-    st.title("🌲 Calculadora de Probabilidad de Ignición (PIG)")
-    st.markdown("""
-    ### 📋 Descripción del Sistema
-    Este sistema calcula la **Probabilidad de Ignición de combustibles forestales** mediante el cruce de variables 
-    meteorológicas y topográficas. Utiliza tablas de humedad del combustible fino muerto (HCFM) ajustadas por:
-    - **Periodo del día** (día/noche)
-    - **Estación del año** (verano, invierno, otoño-primavera)
-    - **Condiciones del terreno** (exposición, pendiente, sombreado)
-    
-    El resultado es un porcentaje que indica la probabilidad de que una fuente de calor genere ignición en el combustible.
-    """)
+# --- INSTRUCTIVO ---
+st.markdown("""
+### 📋 Descripción del Sistema
+Este sistema calcula la **Probabilidad de Ignición de combustibles forestales** mediante el cruce de variables 
+meteorológicas y topográficas. Utiliza tablas de humedad del combustible fino muerto (HCFM) ajustadas por:
+- **Periodo del día** (día/noche)
+- **Estación del año** (verano, invierno, otoño-primavera)
+- **Condiciones del terreno** (exposición, pendiente, sombreado)
 
-with col_logos:
-    if logo_svg:
-        st.markdown(f'<div style="margin-top: 20px;">{logo_svg}</div>', unsafe_allow_html=True)
-    if slogan_svg:
-        st.markdown(f'<div style="margin-top: 10px;">{slogan_svg}</div>', unsafe_allow_html=True)
+El resultado es un porcentaje que indica la probabilidad de que una fuente de calor genere ignición en el combustible.
+""")
 
 st.markdown("---")
 
