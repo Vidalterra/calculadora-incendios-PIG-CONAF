@@ -1,9 +1,28 @@
 import streamlit as st
 import pandas as pd
 from datetime import time
+import base64
+from pathlib import Path
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Calculadora PIG", page_icon="🔥", layout="wide")
+
+# --- FUNCIONES AUXILIARES PARA LOGOS ---
+def get_base64_of_svg(svg_path):
+    """Convierte un archivo SVG a base64 para embeber en HTML"""
+    try:
+        with open(svg_path, "rb") as f:
+            data = f.read()
+        return base64.b64encode(data).decode()
+    except FileNotFoundError:
+        return None
+
+def render_svg_logo(svg_path, width="100%", height="auto"):
+    """Renderiza un SVG desde archivo local"""
+    svg_base64 = get_base64_of_svg(svg_path)
+    if svg_base64:
+        return f'<img src="data:image/svg+xml;base64,{svg_base64}" style="width:{width};height:{height};">'
+    return ""
 
 # --- 1. DEFINICIÓN DE ARCHIVOS (Ajusta los nombres si es necesario) ---
 FILES = {
@@ -189,30 +208,26 @@ def get_correction(month, shade_pct, aspect, slope, hour_float):
     try:
         df = pd.read_csv(FILES[file_key], sep=';')
     except KeyError:
-        return 0, f"Error de configuración: falta archivo para {season}"
+        return 0, "Archivo de corrección no encontrado"
     except FileNotFoundError:
-        return 0, f"Falta archivo: {FILES[file_key]}"
-
-    target_col = None
-    for col in df.columns:
-        if ' a ' in col.lower() or ' A ' in col:
-            try:
-                parts = col.lower().replace(' a ', '-').split('-')
-                start_h = int(parts[0].split(':')[0])
-                end_h = int(parts[1].split(':')[0])
-                
-                if start_h <= hour_float < (end_h + 1):
-                    target_col = col
-                    break
-            except: continue
+        return 0, f"Archivo {FILES[file_key]} no encontrado"
     
-    if target_col is None: return 0, "Hora sin corrección"
-
-    aspect_map = {'Norte': 'N', 'Sur': 'S', 'Este': 'E', 'Oeste': 'O'}
-    aspect_code = aspect_map.get(aspect, 'N')
+    aspect_code = aspect[0]
+    
+    target_col = None
+    for col in df.columns[2:]:
+        try:
+            col_hour = int(col)
+            if hour_float < col_hour:
+                target_col = col
+                break
+        except:
+            continue
+            
+    if target_col is None:
+        target_col = df.columns[-1]
     
     correction = 0
-    
     for idx, row in df.iterrows():
         r_exp = str(row.iloc[0])
         r_slope = str(row.iloc[1])
@@ -254,18 +269,60 @@ def get_pig(hcfm_final, temp, shade_pct):
 
 # --- 5. INTERFAZ GRÁFICA (FRONTEND) ---
 
-# Header con descripción
-st.title("🌲 Calculadora de Probabilidad de Ignición (PIG)")
+# Header con logos
 st.markdown("""
-### 📋 Descripción del Sistema
-Este sistema calcula la **Probabilidad de Ignición de combustibles forestales** mediante el cruce de variables 
-meteorológicas y topográficas. Utiliza tablas de humedad del combustible fino muerto (HCFM) ajustadas por:
-- **Periodo del día** (día/noche)
-- **Estación del año** (verano, invierno, otoño-primavera)
-- **Condiciones del terreno** (exposición, pendiente, sombreado)
+<style>
+    .header-container {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+        padding: 15px 0;
+        border-bottom: 2px solid #e74c3c;
+    }
+    .title-section {
+        flex: 1;
+    }
+    .logo-section {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        max-width: 200px;
+    }
+    .footer-logo {
+        text-align: center;
+        margin-top: 30px;
+        padding: 20px 0;
+        border-top: 2px solid #e74c3c;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-El resultado es un porcentaje que indica la probabilidad de que una fuente de calor genere ignición en el combustible.
-""")
+# Intenta cargar los logos (si están disponibles)
+logo_svg = render_svg_logo("logo.svg", width="150px")
+slogan_svg = render_svg_logo("Slogan.svg", width="150px")
+
+col_title, col_logos = st.columns([3, 1])
+
+with col_title:
+    st.title("🌲 Calculadora de Probabilidad de Ignición (PIG)")
+    st.markdown("""
+    ### 📋 Descripción del Sistema
+    Este sistema calcula la **Probabilidad de Ignición de combustibles forestales** mediante el cruce de variables 
+    meteorológicas y topográficas. Utiliza tablas de humedad del combustible fino muerto (HCFM) ajustadas por:
+    - **Periodo del día** (día/noche)
+    - **Estación del año** (verano, invierno, otoño-primavera)
+    - **Condiciones del terreno** (exposición, pendiente, sombreado)
+    
+    El resultado es un porcentaje que indica la probabilidad de que una fuente de calor genere ignición en el combustible.
+    """)
+
+with col_logos:
+    if logo_svg:
+        st.markdown(f'<div style="margin-top: 20px;">{logo_svg}</div>', unsafe_allow_html=True)
+    if slogan_svg:
+        st.markdown(f'<div style="margin-top: 10px;">{slogan_svg}</div>', unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -393,13 +450,24 @@ if st.button("🔥 Calcular Probabilidad de Ignición", type="primary", use_cont
         st.error(f"❌ Error en datos base: {msg_base}")
         st.info("💡 Verifica que los valores de temperatura y humedad estén dentro de los rangos de las tablas.")
 
-# Footer
+# Footer con logo inferior y texto
 st.markdown("---")
-st.markdown("""
+
+inferior_svg = render_svg_logo("Inferior.svg", width="400px")
+
+st.markdown(f"""
 <div style="text-align: center; color: #7f8c8d; padding: 20px;">
     <small>
     Sistema de Cálculo de Probabilidad de Ignición en Incendios Forestales<br>
-    Basado en humedad de combustibles finos muertos (HCFM) y condiciones meteorológicas/topográficas
+    Basado en humedad de combustibles finos muertos (HCFM) y condiciones meteorológicas/topográficas<br>
+    Oficina Provincial Osorno - Producto de Alumno en Practica Francisco Vidal
     </small>
 </div>
 """, unsafe_allow_html=True)
+
+if inferior_svg:
+    st.markdown(f"""
+    <div class="footer-logo">
+        {inferior_svg}
+    </div>
+    """, unsafe_allow_html=True)
