@@ -259,44 +259,31 @@ def get_correction(month, sombra, exposicion, pendiente, hour_float):
     return correccion, (f"Corrección estacional ({estacion}, Pend {pendiente_key}): "
                         f"Sombra={sombra}%, Exp={exposicion} → {correccion:+.1f}%")
 
-def get_pig(hcfm, temp, sombra):
-    """
-    Obtiene la probabilidad de ignición (PIG) del archivo pig.csv
-    según la HCFM final, temperatura y sombra.
-    """
+def get_pig(hcfm_final, temp, shade_pct):
     try:
-        df_pig = pd.read_csv(FILES["pig"], sep=';')
+        df = pd.read_csv(FILES["pig"], sep=';')
     except FileNotFoundError:
-        return 0, "No se encontró el archivo de probabilidad de ignición"
+        return 0, "Falta archivo PIG"
     
-    # Selección de columna según temperatura
-    if temp <= 20:
-        col_temp = "< 20 ºC"
-    elif temp <= 30:
-        col_temp = ">20 - 30 ºC"
-    else:
-        col_temp = "> 30 ºC"
-    
-    # Buscar la fila según HCFM
-    row_idx = None
-    for idx, val in df_pig.iloc[:, 0].items():
-        if parse_range(hcfm, val):
-            row_idx = idx
+    row_match = None
+    for idx, row in df.iterrows():
+        r_shade = row.iloc[0]
+        r_temp = row.iloc[1]
+        
+        if parse_range(shade_pct, r_shade) and parse_range(temp, r_temp):
+            row_match = row
             break
+            
+    if row_match is None: return 0, "No data PIG para Temp/Sombra"
     
-    if row_idx is None:
-        return 0, f"Humedad {hcfm:.1f}% fuera de rango en tabla PIG"
+    h_target = str(int(round(hcfm_final)))
     
-    # Leer el valor de probabilidad (ajustar por sombra)
-    pig_base = df_pig.loc[row_idx, col_temp]
+    if int(h_target) < 2: h_target = "2"
     
-    # Aplicar ajuste por sombra (ejemplo: si sombra > 50%, reducir PIG)
-    if sombra > 50:
-        pig_final = pig_base * 0.8  # Reducción del 20%
+    if h_target in df.columns:
+        return row_match[h_target], "OK"
     else:
-        pig_final = pig_base
-    
-    return pig_final, f"PIG calculado: Temp {col_temp}, HCFM={hcfm:.1f}% → {pig_final:.0f}%"
+        return row_match.iloc[-1], "Humedad extrema (riesgo bajo)"
 
 # --- ESTILOS CSS ---
 st.markdown("""
