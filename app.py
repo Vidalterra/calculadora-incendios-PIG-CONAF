@@ -214,16 +214,48 @@ def get_correction(month, shade_pct, aspect, slope, hour_float):
     
     aspect_code = aspect[0]
     
+    def col_matches_hour(col_name, hour_float):
+        """
+        Verifica si una columna de hora cubre la hora dada.
+        Acepta formatos como: '14:00 a 15:59', '8:00 a 9:59', '20:00'
+        """
+        s = str(col_name).strip().lower().replace(':', '.')
+        # Rango tipo "14.00 a 15.59"
+        if ' a ' in s:
+            parts = s.split(' a ')
+            try:
+                start = float(parts[0].replace('.', '', 1).replace('.', ':').split('.')[0]) + float('0.' + parts[0].split('.')[-1]) if '.' in parts[0] else float(parts[0])
+                end   = float(parts[1].replace('.', '', 1).replace('.', ':').split('.')[0]) + float('0.' + parts[1].split('.')[-1]) if '.' in parts[1] else float(parts[1])
+                # Parseo más robusto: "14.00" -> 14.0 (horas decimales)
+                def to_hour(t):
+                    t = t.strip()
+                    if '.' in t:
+                        h, m = t.split('.')
+                        return int(h) + int(m)/60
+                    return float(t)
+                start_h = to_hour(parts[0].strip())
+                end_h   = to_hour(parts[1].strip())
+                return start_h <= hour_float <= end_h
+            except:
+                return False
+        # Valor único tipo "20.00"
+        try:
+            def to_hour(t):
+                t = t.strip()
+                if '.' in t:
+                    h, m = t.split('.')
+                    return int(h) + int(m)/60
+                return float(t)
+            return hour_float >= to_hour(s)
+        except:
+            return False
+
     target_col = None
     for col in df.columns[2:]:
-        try:
-            col_hour = int(col)
-            if hour_float < col_hour:
-                target_col = col
-                break
-        except:
-            continue
-            
+        if col_matches_hour(col, hour_float):
+            target_col = col
+            break
+
     if target_col is None:
         target_col = df.columns[-1]
     
